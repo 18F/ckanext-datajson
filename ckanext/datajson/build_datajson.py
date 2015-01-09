@@ -5,11 +5,16 @@ except ImportError:
 
 import logging
 import string
+import os
+import json
 
 import ckan.model as model
 
+from  ckanext.spatial.helpers import get_responsible_party, get_reference_date
 
-log = logging.getLogger('datajson')
+from logging import getLogger
+log = getLogger(__name__)
+
 
 # TODO this file is pretty sloppy, needs cleanup and redundancies removed
 
@@ -24,7 +29,7 @@ def make_datajson_catalog(datasets):
     return catalog
 
 
-def make_datajson_entry(package):
+def make_datajson_entry(package,plugin):
     # extras is a list of dicts [{},{}, {}]. For each dict, extract the key, value entries into a new dict
     extras = dict([(x['key'], x['value']) for x in package['extras']])
 
@@ -52,8 +57,8 @@ def make_datajson_entry(package):
             ("title", strip_if_string(package["title"])),  # required
 
             # ("accessLevel", 'public'),  # required
-            ("accessLevel", strip_if_string(extras.get('public_access_level'))),  # required
-
+            #("accessLevel", strip_if_string(extras.get('public_access_level'))),  # required
+            ("accessLevel", extra(package, "Access Level", default="public")),
             # ("accrualPeriodicity", "R/P1Y"),  # optional
             # ('accrualPeriodicity', 'accrual_periodicity'),
             ('accrualPeriodicity', get_accrual_periodicity(extras.get('accrual_periodicity'))), # optional
@@ -65,6 +70,9 @@ def make_datajson_entry(package):
             # ("fn", "Jane Doe"),
             # ("hasEmail", "mailto:jane.doe@agency.gov")
             # ])),  # required
+            #('contactPoint', get_contact_point(extras, package)),  # required
+            #("contactPoint", contact_point(package, default=plugin.default_contactpoint)),
+
             ('contactPoint', get_contact_point(extras, package)),  # required
 
             ("dataQuality", strip_if_string(extras.get('data_quality'))),  # required-if-applicable
@@ -76,20 +84,25 @@ def make_datajson_entry(package):
 
             # ("description", 'asdfasdf'),  # required
 
-            ("identifier", strip_if_string(extras.get('unique_id'))),  # required
+            #("identifier", strip_if_string(extras.get('unique_id'))),  # required
+            ("identifier", package["id"]),
+
             # ("identifier", 'asdfasdfasdf'),  # required
 
             ("isPartOf", parent_dataset_id),  # optional
             ("issued", strip_if_string(extras.get('release_date'))),  # optional
 
             # ("keyword", ['a', 'b']),  # required
-            ("keyword", [t["display_name"] for t in package["tags"]]),  # required
+            #("keyword", [t["display_name"] for t in package["tags"]]),  # required
+            ("keyword", tags(package)),
+
 
             ("landingPage", strip_if_string(extras.get('homepage_url'))),   # optional
 
             ("license", strip_if_string(extras.get("license_new"))),    # required-if-applicable
 
-            ("modified", strip_if_string(extras.get("modified"))),  # required
+            #("modified", strip_if_string(extras.get("modified"))),  # required
+            ("modified", extra(package, "Metadata Date")),
 
             ("primaryITInvestmentUII", strip_if_string(extras.get('primary_it_investment_uii'))),  # optional
 
@@ -97,7 +110,12 @@ def make_datajson_entry(package):
             # ("@type", "org:Organization"),
             # ("name", "Widget Services")
             # ])),  # required
-            ("publisher", get_publisher_tree(extras)),  # required
+            #("publisher", get_publisher_tree(extras)),  # required
+            #("publisher", [ get_responsible_party(extra(package, "Responsible Party"))] ),
+            ('publisher', OrderedDict([
+            ("@type", "org:Organization"),
+            ("name", get_responsible_party(extra(package, "Responsible Party")))
+            ])),  # required
 
             ("rights", strip_if_string(extras.get('access_level_comment'))),  # required
 
@@ -118,19 +136,19 @@ def make_datajson_entry(package):
             # ])
             #      for r in package["resources"]
             #  ])
+            ('bureauCode', [ bureau_code(package) ] ),  # required
+            ('programCode', [ extra(package, "Program Code").split(" ") if extra(package, "Program Code") else "000:000" ]),    # required
         ]
 
         for pair in [
-            ('bureauCode', 'bureau_code'),  # required
             ('language', 'language'),   # optional
-            ('programCode', 'program_code'),    # required
             ('references', 'related_documents'),    # optional
             ('theme', 'category'),  # optional
         ]:
             split_multiple_entries(retlist, extras, pair)
 
     except KeyError as e:
-        log.warn("Invalid field detected for package with id=[%s], title=['%s']: '%s'", package.get('id'),
+        log.warning("Invalid field detected for package with id=[%s], title=['%s']: '%s'", package.get('id'),
                  package.get('title'), e)
         return
 
@@ -181,12 +199,13 @@ def make_datajson_entry(package):
     from datajsonvalidator import do_validation
     errors = []
     try:
+        log.debug("dict: %s",striped_retlist_dict)
         do_validation([dict(striped_retlist_dict)], errors)
     except Exception as e:
         errors.append(("Internal Error", ["Something bad happened: " + unicode(e)]))
     if len(errors) > 0:
         for error in errors:
-            log.warn(error)
+            log.warning(error)
         return
 
     return striped_retlist_dict
@@ -219,6 +238,24 @@ accrual_periodicity_dict = {
 def get_accrual_periodicity(frequency):
     return accrual_periodicity_dict.get(str(frequency).lower().strip(), frequency)
 
+def extension_to_mime_type(file_ext):
+    if file_ext is None: return None
+    ext = {
+        "csv": "text/csv",
+        "xls": "application/vnd.ms-excel",
+        "xml": "application/xml",
+        "rdf": "application/rdf+xml",
+        "json": "application/json",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "text": "text/plain",
+        "feed": "application/rss+xml",
+        "arcgis_rest": "text/html",
+        "wms": "text/html",
+        "html": "text/html",
+        "application/pdf": "application/pdf",
+    }
+    return ext.get(file_ext.lower(), "application/unknown")
+
 
 def generate_distribution(package):
     arr = []
@@ -234,12 +271,17 @@ def generate_distribution(package):
                     resource += [("downloadURL", res_url)]
                     if 'format' in rkeys:
                         res_format = strip_if_string(r.get('format'))
+                        if not res_format:
+                           res_format="text/html" 
                         if res_format:
-                            resource += [("mediaType", res_format)]
+                           log.debug("res_format: %s res_url: %s", res_format,res_url)
+                           if '/' not in res_format:
+                              res_format = extension_to_mime_type(res_format)
+                           resource += [("mediaType", res_format)]
                     else:
-                        log.warn("Missing mediaType for resource in package ['%s']", package.get('id'))
+                        log.warning("Missing mediaType for resource in package ['%s']", package.get('id'))
         else:
-            log.warn("Missing downloadURL for resource in package ['%s']", package.get('id'))
+            log.warning("Missing downloadURL for resource in package ['%s']", package.get('id'))
 
         # if 'accessURL_new' in rkeys:
         #     res_access_url = strip_if_string(r.get('accessURL_new'))
@@ -282,8 +324,21 @@ def generate_distribution(package):
 
     return arr
 
+def contact_point(package, default=None):
+    if extra(package, "Contact Name") is not None: return extra(package, "Contact Name")
+    elif get_responsible_party(extra(package, "Responsible Party")) is not None: return get_responsible_party(extra(package, "Responsible Party"))
+    else: return default
 
 def get_contact_point(extras, package):
+    if extra(package, "Contact Name") is not None: 
+        log.warn("AJS: got contact name")
+        extras['contact_name'] = extra(package, "Contact Name")
+    elif get_responsible_party(extra(package, "Responsible Party")) is not None: 
+        extras['contact_name'] = get_responsible_party(extra(package, "Responsible Party"))
+    if extra(package, "Contact Email") is not None: 
+        log.warn("AJS: got contact email")
+        extras['contact_email'] = extra(package, "Contact Email")
+
     for required_field in ["contact_name", "contact_email"]:
         if required_field not in extras.keys():
             raise KeyError(required_field)
@@ -402,3 +457,60 @@ def split_multiple_entries(retlist, extras, names):
         retlist.append(
             (names[0], [string.strip(x) for x in string.split(found_element, ',')])
         )
+
+def bureau_code(package, default=None):
+    log.debug("org title: %s",package["organization"]["title"])
+    file = open(os.path.join(os.path.dirname(__file__),"resources") + "/omb-agency-bureau-treasury-codes.json", 'r');
+    codelist = json.load(file)
+    for bureau in codelist:
+        if bureau['Agency'] == package["organization"]["title"]: 
+           log.debug("found match: %s", "[{0}:{1}]".format(bureau["OMB Agency Code"], bureau["OMB Bureau Code"]))
+           result = "{0}:{1}".format(bureau["OMB Agency Code"], bureau["OMB Bureau Code"])
+           log.debug("found match: '%s'", result)
+           return result
+    return default
+
+
+def tags(package, default=None):
+    # Retrieves the value of an extras field.
+    for extra in package["extras"]:
+        if extra["key"] == "tags":
+            keywords = extra["value"].split(",")
+            return keywords
+
+def extra(package, key, default=None):
+    # Retrieves the value of an extras field.
+    '''
+    for extra in package["extras"]:
+        if extra["key"] == "extras_rollup":
+            extras_rollup_dict = extra["value"]
+            #return(extras_rollup_dict) #returns full json-formatted 'value' field of extras_rollup
+            extras_rollup_dict = json.loads(extra["value"])
+            for rollup_key in extras_rollup_dict.keys():
+                if rollup_key == key: return extras_rollup_dict.get(rollup_key)
+        
+    return default
+    '''
+    
+    current_extras = package["extras"]
+    #new_extras =[]
+    new_extras = {}
+    for extra in current_extras:
+        if extra['key'] == 'extras_rollup':
+            rolledup_extras = json.loads(extra['value'])
+            for k, value in rolledup_extras.iteritems():
+                log.info("rolledup_extras key: %s, value: %s", k, value)
+                #new_extras.append({"key": k, "value": value})
+                new_extras[k] = value
+        #else:
+        #    new_extras.append(extra)
+    
+    #decode keys:
+    for k, v in new_extras.iteritems():
+        k = k.replace('_', ' ').replace('-', ' ').title()
+        if isinstance(v, (list, tuple)):
+            v = ", ".join(map(unicode, v))
+        log.info("decoded values key: %s, value: %s", k, v)
+        if k == key:
+            return v
+    return default
