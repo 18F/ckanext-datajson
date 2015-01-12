@@ -69,8 +69,6 @@ class DataJsonPlugin(p.SingletonPlugin):
         return m
 
     def after_map(self, m):
-        log.debug('AJS: after_map why')
-        logger.debug("AJS: after_map ")
         if DataJsonPlugin.route_enabled:
             # /data.json and /data.jsonld (or other path as configured by user)
             m.connect('datajson', DataJsonPlugin.route_path, controller='ckanext.datajson.plugin:DataJsonController',
@@ -97,7 +95,6 @@ class DataJsonPlugin(p.SingletonPlugin):
 
 class DataJsonController(BaseController):
     def generate_output(self, format):
-        log.debug("AJS: generate_output top ")
         # set content type (charset required or pylons throws an error)
         response.content_type = 'application/json; charset=UTF-8'
 
@@ -195,10 +192,10 @@ class DataJsonController(BaseController):
 
 def make_json():
     # Build the data.json file.
-    log.debug("AJS: make_json top of function")
+    log.debug("make_json top of function")
     params = {'limit': 100, 'offset': 0}
     packages = p.toolkit.get_action("current_package_list_with_resources")(None, params)
-    log.debug("AJS: make_json got list of packages")
+    log.debug("make_json got list of packages")
     while packages:
         output = []
         # Create data.json only using public and public-restricted datasets, datasets marked non-public are not exposed
@@ -216,7 +213,7 @@ def make_json():
                 pass
         params['offset']+=params['limit']
         packages = p.toolkit.get_action("current_package_list_with_resources")(None,params) 
-        log.debug("AJS: make_json got list of packages")
+        log.debug("make_json got list of packages")
     return output
 
 

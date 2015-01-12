@@ -7,6 +7,7 @@ import logging
 import string
 import os
 import json
+import dateutil.parser as parser
 
 import ckan.model as model
 
@@ -102,7 +103,7 @@ def make_datajson_entry(package,plugin):
             ("license", strip_if_string(extras.get("license_new"))),    # required-if-applicable
 
             #("modified", strip_if_string(extras.get("modified"))),  # required
-            ("modified", extra(package, "Metadata Date")),
+            ("modified", clean_date(extra(package, "Metadata Date"))),
 
             ("primaryITInvestmentUII", strip_if_string(extras.get('primary_it_investment_uii'))),  # optional
 
@@ -331,12 +332,10 @@ def contact_point(package, default=None):
 
 def get_contact_point(extras, package):
     if extra(package, "Contact Name") is not None: 
-        log.warn("AJS: got contact name")
         extras['contact_name'] = extra(package, "Contact Name")
     elif get_responsible_party(extra(package, "Responsible Party")) is not None: 
         extras['contact_name'] = get_responsible_party(extra(package, "Responsible Party"))
     if extra(package, "Contact Email") is not None: 
-        log.warn("AJS: got contact email")
         extras['contact_email'] = extra(package, "Contact Email")
 
     for required_field in ["contact_name", "contact_email"]:
@@ -440,6 +439,13 @@ def strip_if_string(val):
             val = None
     return val
 
+def clean_date(val):
+    if isinstance(val, (str, unicode)):
+    # 2014-03-18-06:00 needs to become "2014-03-18T06:00"
+        date = (parser.parse(val))
+        val = (date.isoformat())
+        
+    return val
 
 def get_primary_resource(package):
     # Return info about a "primary" resource. Select a good one.
