@@ -499,7 +499,7 @@ def extra(package, key, default=None):
         if extra['key'] == 'extras_rollup':
             rolledup_extras = json.loads(extra['value'])
             for k, value in rolledup_extras.iteritems():
-                log.info("rolledup_extras key: %s, value: %s", k, value)
+                #log.info("rolledup_extras key: %s, value: %s", k, value)
                 #new_extras.append({"key": k, "value": value})
                 new_extras[k] = value
         #else:
@@ -510,7 +510,7 @@ def extra(package, key, default=None):
         k = k.replace('_', ' ').replace('-', ' ').title()
         if isinstance(v, (list, tuple)):
             v = ", ".join(map(unicode, v))
-        log.info("decoded values key: %s, value: %s", k, v)
+        #log.info("decoded values key: %s, value: %s", k, v)
         if k == key:
             return v
     return default

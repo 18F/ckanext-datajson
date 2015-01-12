@@ -196,21 +196,27 @@ class DataJsonController(BaseController):
 def make_json():
     # Build the data.json file.
     log.debug("AJS: make_json top of function")
-    packages = p.toolkit.get_action("current_package_list_with_resources")(None, {})
-    output = []
-    # Create data.json only using public and public-restricted datasets, datasets marked non-public are not exposed
-    for pkg in packages:
-        extras = dict([(x['key'], x['value']) for x in pkg['extras']])
-        try:
+    params = {'limit': 100, 'offset': 0}
+    packages = p.toolkit.get_action("current_package_list_with_resources")(None, params)
+    log.debug("AJS: make_json got list of packages")
+    while packages:
+        output = []
+        # Create data.json only using public and public-restricted datasets, datasets marked non-public are not exposed
+        for pkg in packages:
+            extras = dict([(x['key'], x['value']) for x in pkg['extras']])
+            try:
                 datajson_entry = make_datajson_entry(pkg,DataJsonPlugin)
                 if datajson_entry:
                     output.append(datajson_entry)
                 else:
                     log.warning("Dataset id=[%s], title=[%s] omitted\n", pkg.get('id', None), pkg.get('title', None))
-        except KeyError,e :
-            log.warning("Dataset id=[%s], title=[%s] missing required 'public_access_level' field '%s'", pkg.get('id', None),
+            except KeyError,e :
+                log.warning("Dataset id=[%s], title=[%s] missing required 'public_access_level' field '%s'", pkg.get('id', None),
                         pkg.get('title', None),e)
-            pass
+                pass
+        params['offset']+=params['limit']
+        packages = p.toolkit.get_action("current_package_list_with_resources")(None,params) 
+        log.debug("AJS: make_json got list of packages")
     return output
 
 
