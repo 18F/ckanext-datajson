@@ -1,4 +1,10 @@
 import re
+import rfc3987 as rfc3987_url
+
+# from the iso8601 package, plus ^ and $ on the edges
+ISO8601_REGEX = re.compile(r"^([0-9]{4})(-([0-9]{1,2})(-([0-9]{1,2})"
+                           r"((.)([0-9]{2}):([0-9]{2})(:([0-9]{2})(\.([0-9]+))?)?"
+                           r"(Z|(([-+])([0-9]{2}):([0-9]{2})))?)?)?)?$")
 
 TEMPORAL_REGEX_1 = re.compile(
     r'^([\+-]?\d{4}(?!\d{2}\b))((-?)((0[1-9]|1[0-2])(\3([12]\d|0[1-9]|3[01]))?|W([0-4]\d|5[0-2])(-?[1-7])?'
@@ -49,18 +55,11 @@ ISSUED_REGEX = re.compile(
     r'\d+(?!:))?)?(\17[0-5]\d([\.,]\d+)?)?([zZ]|([\+-])([01]\d|2[0-3]):?([0-5]\d)?)?)?)?$'
 )
 
-URL_REGEX = re.compile(
-    r'^(?:http|ftp)s?://'  # http:// or https:// or ftp:// or ftps://
-    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
-    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
-    r'(?::\d+)?'  # optional port
-    r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-
 PROGRAM_CODE_REGEX = re.compile(r"^[0-9]{3}:[0-9]{3}$")
 
 IANA_MIME_REGEX = re.compile(r"^[-\w]+/[-\w]+(\.[-\w]+)*([+][-\w]+)?$")
 
-PRIMARY_IT_INVESTMENT_UII_REGEX = re.compile(r"$[0-9]{3}-[0-9]{9}^")
+PRIMARY_IT_INVESTMENT_UII_REGEX = re.compile(r"^[0-9]{3}-[0-9]{9}$")
 
 ACCRUAL_PERIODICITY_VALUES = (
     None, "R/P10Y", "R/P4Y", "R/P1Y", "R/P2M", "R/P3.5D", "R/P1D", "R/P2W", "R/P0.5W", "R/P6M",
@@ -76,15 +75,24 @@ LANGUAGE_REGEX = re.compile(
     r'(art-lojban|cel-gaulish|no-bok|no-nyn|zh-guoyu|zh-hakka|zh-min|zh-min-nan|zh-xiang)))$'
 )
 
+REDACTED_REGEX = re.compile(
+    r'^(\[\[REDACTED).*?(\]\])$'
+)
+
+import lepl.apps.rfc3696
+email_validator = lepl.apps.rfc3696.Email()
+
 # load the OMB bureau codes on first load of this module
-import urllib, csv
+import urllib
+import csv
 
 omb_burueau_codes = set()
 for row in csv.DictReader(urllib.urlopen("https://project-open-data.cio.gov/data/omb_bureau_codes.csv")):
     omb_burueau_codes.add(row["Agency Code"] + ":" + row["Bureau Code"])
 
+
 # main function for validation
-def do_validation(doc, errors_array):
+def do_validation(doc, errors_array, seen_identifiers):
     errs = {}
 
     if type(doc) != list:
@@ -94,8 +102,6 @@ def do_validation(doc, errors_array):
     elif len(doc) == 0:
         add_error(errs, 0, "Catalog Is Empty", "There are no entries in your file.")
     else:
-        seen_identifiers = set()
-
         for i, item in enumerate(doc):
             # Required
 
@@ -136,14 +142,12 @@ def do_validation(doc, errors_array):
 
                 # contactPoint - hasEmail # required
                 if check_required_string_field(cp, "hasEmail", 9, dataset_name, errs):
-                    import lepl.apps.rfc3696
-
-                    email_validator = lepl.apps.rfc3696.Email()
-                    email = cp["hasEmail"].replace('mailto:', '')
-                    if not email_validator(email):
-                        add_error(errs, 5, "Invalid Required Field Value",
-                                  "The email address \"%s\" is not a valid email address." % email,
-                                  dataset_name)
+                    if not is_redacted(cp.get('hasEmail')):
+                        email = cp["hasEmail"].replace('mailto:', '')
+                        if not email_validator(email):
+                            add_error(errs, 5, "Invalid Required Field Value",
+                                      "The email address \"%s\" is not a valid email address." % email,
+                                      dataset_name)
 
             # description # required
             check_required_string_field(item, "description", 1, dataset_name, errs)
@@ -158,8 +162,9 @@ def do_validation(doc, errors_array):
 
             # keyword # required
             if isinstance(item.get("keyword"), (str, unicode)):
-                add_error(errs, 5, "Update Your File!",
-                          "The keyword field used to be a string but now it must be an array.", dataset_name)
+                if not is_redacted(item.get("keyword")):
+                    add_error(errs, 5, "Update Your File!",
+                              "The keyword field used to be a string but now it must be an array.", dataset_name)
             elif check_required_field(item, "keyword", list, dataset_name, errs):
                 for kw in item["keyword"]:
                     if not isinstance(kw, (str, unicode)):
@@ -171,7 +176,8 @@ def do_validation(doc, errors_array):
 
             # modified # required
             if check_required_string_field(item, "modified", 1, dataset_name, errs):
-                if not MODIFIED_REGEX_1.match(item['modified']) \
+                if not is_redacted(item['modified']) \
+                        and not MODIFIED_REGEX_1.match(item['modified']) \
                         and not MODIFIED_REGEX_2.match(item['modified']) \
                         and not MODIFIED_REGEX_3.match(item['modified']):
                     add_error(errs, 5, "Invalid Required Field Value",
@@ -195,8 +201,8 @@ def do_validation(doc, errors_array):
             # Required-If-Applicable
 
             # dataQuality # Required-If-Applicable
-            if item.get("dataQuality") is None:
-                pass  # not required
+            if item.get("dataQuality") is None or is_redacted(item.get("dataQuality")):
+                pass  # not required or REDACTED
             elif not isinstance(item["dataQuality"], bool):
                 add_error(errs, 50, "Invalid Field Value (Optional Fields)",
                           "The field 'dataQuality' must be true or false, "
@@ -207,35 +213,42 @@ def do_validation(doc, errors_array):
             if item.get("distribution") is None:
                 pass  # not required
             elif not isinstance(item["distribution"], list):
-                add_error(errs, 50, "Invalid Field Value (Optional Fields)",
-                          "The field 'distribution' must be an array, if present.", dataset_name)
+                if isinstance(item["distribution"], (str, unicode)) and is_redacted(item.get("distribution")):
+                    pass
+                else:
+                    add_error(errs, 50, "Invalid Field Value (Optional Fields)",
+                              "The field 'distribution' must be an array, if present.", dataset_name)
             else:
                 for j, dt in enumerate(item["distribution"]):
+                    if isinstance(dt, (str, unicode)):
+                        if is_redacted(dt):
+                            continue
                     distribution_name = dataset_name + (" distribution %d" % (j + 1))
                     # distribution - downloadURL # Required-If-Applicable
-                    check_url_field(False, dt, "downloadURL", distribution_name, errs)
+                    check_url_field(False, dt, "downloadURL", distribution_name, errs, True)
 
                     # distribution - mediaType # Required-If-Applicable
                     if 'downloadURL' in dt:
                         if check_required_string_field(dt, "mediaType", 1, distribution_name, errs):
-                            if not IANA_MIME_REGEX.match(dt["mediaType"]):
+                            if not IANA_MIME_REGEX.match(dt["mediaType"]) \
+                                    and not is_redacted(dt["mediaType"]):
                                 add_error(errs, 5, "Invalid Field Value",
                                           "The distribution mediaType \"%s\" is invalid. "
                                           "It must be in IANA MIME format." % dt["mediaType"],
                                           distribution_name)
 
                     # distribution - accessURL # optional
-                    check_url_field(False, dt, "accessURL", distribution_name, errs)
+                    check_url_field(False, dt, "accessURL", distribution_name, errs, True)
 
                     # distribution - conformsTo # optional
-                    check_url_field(False, dt, "conformsTo", distribution_name, errs)
+                    check_url_field(False, dt, "conformsTo", distribution_name, errs, True)
 
                     # distribution - describedBy # optional
-                    check_url_field(False, dt, "describedBy", distribution_name, errs)
+                    check_url_field(False, dt, "describedBy", distribution_name, errs, True)
 
                     # distribution - describedByType # optional
-                    if dt.get("describedByType") is None:
-                        pass  # not required
+                    if dt.get("describedByType") is None or is_redacted(dt.get("describedByType")):
+                        pass  # not required or REDACTED
                     elif not IANA_MIME_REGEX.match(dt["describedByType"]):
                         add_error(errs, 5, "Invalid Field Value",
                                   "The describedByType \"%s\" is invalid. "
@@ -255,7 +268,7 @@ def do_validation(doc, errors_array):
                         check_required_string_field(dt, "title", 1, distribution_name, errs)
 
             # license # Required-If-Applicable
-            check_url_field(False, item, "license", dataset_name, errs)
+            check_url_field(False, item, "license", dataset_name, errs, True)
 
             # rights # Required-If-Applicable
             # TODO move to warnings
@@ -269,8 +282,8 @@ def do_validation(doc, errors_array):
                           "The field 'spatial' must be a string value if specified.", dataset_name)
 
             # temporal # Required-If-Applicable
-            if item.get("temporal") is None:
-                pass  # not required
+            if item.get("temporal") is None or is_redacted(item.get("temporal")):
+                pass  # not required or REDACTED
             elif not isinstance(item["temporal"], (str, unicode)):
                 add_error(errs, 10, "Invalid Field Value (Optional Fields)",
                           "The field 'temporal' must be a string value if specified.", dataset_name)
@@ -286,19 +299,20 @@ def do_validation(doc, errors_array):
             # Expanded Fields
 
             # accrualPeriodicity # optional
-            if item.get("accrualPeriodicity") not in ACCRUAL_PERIODICITY_VALUES:
+            if item.get("accrualPeriodicity") not in ACCRUAL_PERIODICITY_VALUES \
+                    and not is_redacted(item.get("accrualPeriodicity")):
                 add_error(errs, 50, "Invalid Field Value (Optional Fields)",
                           "The field 'accrualPeriodicity' had an invalid value.", dataset_name)
 
             # conformsTo # optional
-            check_url_field(False, item, "conformsTo", dataset_name, errs)
+            check_url_field(False, item, "conformsTo", dataset_name, errs, True)
 
             # describedBy # optional
-            check_url_field(False, item, "describedBy", dataset_name, errs)
+            check_url_field(False, item, "describedBy", dataset_name, errs, True)
 
             # describedByType # optional
-            if item.get("describedByType") is None:
-                pass  # not required
+            if item.get("describedByType") is None or is_redacted(item.get("describedByType")):
+                pass  # not required or REDACTED
             elif not IANA_MIME_REGEX.match(item["describedByType"]):
                 add_error(errs, 5, "Invalid Field Value",
                           "The describedByType \"%s\" is invalid. "
@@ -310,29 +324,29 @@ def do_validation(doc, errors_array):
                 check_required_string_field(item, "isPartOf", 1, dataset_name, errs)
 
             # issued # optional
-            if item.get("issued") is not None:
+            if item.get("issued") is not None and not is_redacted(item.get("issued")):
                 if not ISSUED_REGEX.match(item['issued']):
                     add_error(errs, 50, "Invalid Field Value (Optional Fields)",
                               "The field 'issued' is not in a valid format.", dataset_name)
 
             # landingPage # optional
-            check_url_field(False, item, "landingPage", dataset_name, errs)
+            check_url_field(False, item, "landingPage", dataset_name, errs, True)
 
             # language # optional
-            if item.get("language") is None:
-                pass  # not required
+            if item.get("language") is None or is_redacted(item.get("language")):
+                pass  # not required or REDACTED
             elif not isinstance(item["language"], list):
                 add_error(errs, 50, "Invalid Field Value (Optional Fields)",
                           "The field 'language' must be an array, if present.", dataset_name)
             else:
                 for s in item["language"]:
-                    if not LANGUAGE_REGEX.match(s):
+                    if not LANGUAGE_REGEX.match(s) and not is_redacted(s):
                         add_error(errs, 50, "Invalid Field Value (Optional Fields)",
                                   "The field 'language' had an invalid language: \"%s\"" % s, dataset_name)
 
             # PrimaryITInvestmentUII # optional
-            if item.get("PrimaryITInvestmentUII") is None:
-                pass  # not required
+            if item.get("PrimaryITInvestmentUII") is None or is_redacted(item.get("PrimaryITInvestmentUII")):
+                pass  # not required or REDACTED
             elif not PRIMARY_IT_INVESTMENT_UII_REGEX.match(item["PrimaryITInvestmentUII"]):
                 add_error(errs, 50, "Invalid Field Value (Optional Fields)",
                           "The field 'PrimaryITInvestmentUII' must be a string "
@@ -340,22 +354,25 @@ def do_validation(doc, errors_array):
 
             # references # optional
             if item.get("references") is None:
-                pass  # not required
+                pass  # not required or REDACTED
             elif not isinstance(item["references"], list):
-                add_error(errs, 50, "Invalid Field Value (Optional Fields)",
-                          "The field 'references' must be an array, if present.", dataset_name)
+                if isinstance(item["references"], (str, unicode)) and is_redacted(item.get("references")):
+                    pass
+                else:
+                    add_error(errs, 50, "Invalid Field Value (Optional Fields)",
+                              "The field 'references' must be an array, if present.", dataset_name)
             else:
                 for s in item["references"]:
-                    if not URL_REGEX.match(s):
+                    if not rfc3987_url.match(s) and not is_redacted(s):
                         add_error(errs, 50, "Invalid Field Value (Optional Fields)",
-                                  "The field 'references' had an invalid URL: \"%s\"" % s, dataset_name)
+                                  "The field 'references' had an invalid rfc3987 URL: \"%s\"" % s, dataset_name)
 
             # systemOfRecords # optional
             check_url_field(False, item, "systemOfRecords", dataset_name, errs)
 
             # theme #optional
-            if item.get("theme") is None:
-                pass  # not required
+            if item.get("theme") is None or is_redacted(item.get("theme")):
+                pass  # not required or REDACTED
             elif not isinstance(item["theme"], list):
                 add_error(errs, 50, "Invalid Field Value (Optional Fields)", "The field 'theme' must be an array.",
                           dataset_name)
@@ -374,7 +391,7 @@ def do_validation(doc, errors_array):
             err_type[1],  # heading
             [err_item + (" (%d locations)" % len(errs[err_type][err_item]) if len(errs[err_type][err_item]) else "")
              for err_item in sorted(errs[err_type], key=lambda x: (-len(errs[err_type][x]), x))
-            ]))
+             ]))
 
 
 def add_error(errs, severity, heading, description, context=None):
@@ -397,7 +414,7 @@ def check_required_field(obj, field_name, data_type, dataset_name, errs):
         add_error(errs, 10, "Missing Required Fields", "The '%s' field is missing." % field_name, dataset_name)
         return False
     elif obj[field_name] is None:
-        add_error(errs, 10, "Missing Required Fields", "The '%s' field is set to null." % field_name, dataset_name)
+        add_error(errs, 10, "Missing Required Fields", "The '%s' field is empty." % field_name, dataset_name)
         return False
     elif not isinstance(obj[field_name], data_type):
         add_error(errs, 5, "Invalid Required Field Value",
@@ -426,15 +443,20 @@ def check_required_string_field(obj, field_name, min_length, dataset_name, errs)
     return True
 
 
-def check_url_field(required, obj, field_name, dataset_name, errs):
+def is_redacted(field):
+    if isinstance(field, (str, unicode)) and REDACTED_REGEX.match(field):
+        return True
+    return False
+
+
+def check_url_field(required, obj, field_name, dataset_name, errs, allow_redacted=False):
     # checks that a required or optional field, if specified, looks like a URL
     if not required and (field_name not in obj or obj[field_name] is None): return True  # not required, so OK
     if not check_required_field(obj, field_name, (str, unicode), dataset_name,
                                 errs): return False  # just checking data type
-    if not URL_REGEX.match(obj[field_name]):
+    if allow_redacted and is_redacted(obj[field_name]): return True
+    if not rfc3987_url.match(obj[field_name]):
         add_error(errs, 5, "Invalid Required Field Value",
-                  "The '%s' field has an invalid URL: \"%s\"." % (field_name, obj[field_name]), dataset_name)
+                  "The '%s' field has an invalid rfc3987 URL: \"%s\"." % (field_name, obj[field_name]), dataset_name)
         return False
     return True
-
-
